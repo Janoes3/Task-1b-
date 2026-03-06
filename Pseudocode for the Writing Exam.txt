@@ -1,0 +1,782 @@
+FUNCTION AddWorkout(userID)
+BEGIN FUNCTION
+    DECLARE workoutType
+    DECLARE workoutDate
+    DECLARE workoutDurationMins
+    DECLARE workoutIntensity
+    DECLARE calories
+    DECLARE workoutID
+    DECLARE isValid
+    DECLARE errorMessage
+
+    SET isValid TO TRUE
+    SET errorMessage TO ""
+
+    # --- Prompt for inputs ---
+    SEND "Enter workout type (e.g., Cardio, Strength, Yoga):" TO DISPLAY
+    RECEIVE workoutType FROM (ALPHABETIC) KEYBOARD
+
+    SEND "Enter workout date and time (DD/MM/YYYY HH:MM):" TO DISPLAY
+    RECEIVE workoutDate FROM (DATE/TIME) KEYBOARD
+
+    SEND "Enter workout duration in minutes (1-300):" TO DISPLAY
+    RECEIVE workoutDurationMins FROM (INTEGER) KEYBOARD
+
+    SEND "Enter workout intensity (Low/Medium/High):" TO DISPLAY
+    RECEIVE workoutIntensity FROM (ALPHABETIC) KEYBOARD
+
+    SEND "Enter calories (0-10000):" TO DISPLAY
+    RECEIVE calories FROM (INTEGER) KEYBOARD
+
+    # --- Presence checks ---
+    IF workoutType = "" THEN
+        SET isValid TO FALSE
+        SET errorMessage TO "Workout type cannot be empty."
+    END IF
+
+    IF isValid = TRUE AND workoutDate = NULL THEN
+        SET isValid TO FALSE
+        SET errorMessage TO "Workout date/time is required."
+    END IF
+
+    IF isValid = TRUE AND workoutDurationMins = NULL THEN
+        SET isValid TO FALSE
+        SET errorMessage TO "Workout duration is required."
+    END IF
+
+    IF isValid = TRUE AND workoutIntensity = "" THEN
+        SET isValid TO FALSE
+        SET errorMessage TO "Workout intensity is required."
+    END IF
+
+    IF isValid = TRUE AND calories = NULL THEN
+        SET isValid TO FALSE
+        SET errorMessage TO "Calories are required."
+    END IF
+
+    # --- Type and format checks ---
+    # workoutType: alphabets only (basic check)
+    IF isValid = TRUE AND NOT (workoutType CONTAINS ONLY LETTERS AND SPACES) THEN
+        SET isValid TO FALSE
+        SET errorMessage TO "Workout type must contain only letters."
+    END IF
+
+    # workoutDate must not be in the future
+    IF isValid = TRUE AND workoutDate > CURRENT_TIME THEN
+        SET isValid TO FALSE
+        SET errorMessage TO "Workout date/time cannot be in the future."
+    END IF
+
+    # workoutDurationMins must be an integer in range
+    IF isValid = TRUE AND (workoutDurationMins < 1 OR workoutDurationMins > 300) THEN
+        SET isValid TO FALSE
+        SET errorMessage TO "Duration must be between 1 and 300 minutes."
+    END IF
+
+    # workoutIntensity must be one of Low/Medium/High (case-insensitive)
+    IF isValid = TRUE THEN
+        SET workoutIntensity TO UPPER(workoutIntensity)
+        IF NOT (workoutIntensity = "LOW" OR workoutIntensity = "MEDIUM" OR workoutIntensity = "HIGH") THEN
+            SET isValid TO FALSE
+            SET errorMessage TO "Intensity must be Low, Medium, or High."
+        END IF
+    END IF
+
+    # calories must be within sensible range
+    IF isValid = TRUE AND (calories < 0 OR calories > 10000) THEN
+        SET isValid TO FALSE
+        SET errorMessage TO "Calories must be between 0 and 10000."
+    END IF
+
+    # --- Handle validation failure ---
+    IF isValid = FALSE THEN
+        CALL ShowErrorMessage("Invalid input")
+        WRITE Tbl_ErrorLog errorMessage, CURRENT_TIME
+        WRITE Tbl_WorkoutAudit 0, userID, CURRENT_TIME, "CreateFailed"
+        RETURN 0
+    END IF
+
+    # --- Insert workout record ---
+    SET workoutID TO INSERT INTO Tbl_Workout
+        VALUES (AUTO_ID,
+                userID,
+                workoutType,
+                workoutDate,
+                workoutDurationMins,
+                workoutIntensity,
+                calories,
+                CURRENT_TIME)
+
+    # --- Audit and confirm ---
+    WRITE Tbl_WorkoutAudit workoutID, userID, CURRENT_TIME, "Created"
+    SEND "Workout recorded. ID: " & workoutID TO DISPLAY
+
+    RETURN workoutID
+END FUNCTION
+
+
+FUNCTION update_password()
+BEGIN FUNCTION
+    DECLARE usernameEmail
+    DECLARE currentPassword
+    DECLARE newPassword
+    DECLARE confirmPassword
+    DECLARE storedPasswordHash
+    DECLARE userID
+    DECLARE isValid
+    DECLARE errorMessage
+    DECLARE newPasswordHash
+    DECLARE reuseFound
+    DECLARE prevHash
+
+    SET isValid TO TRUE
+    SET errorMessage TO ""
+    SET reuseFound TO FALSE
+
+    # --- Capture inputs ---
+    SEND "Enter your email:" TO DISPLAY
+    RECEIVE usernameEmail FROM (ALPHANUMERIC) KEYBOARD
+
+    SEND "Enter your current password:" TO DISPLAY
+    RECEIVE currentPassword FROM (ALPHANUMERIC) KEYBOARD
+
+    SEND "Enter your new password:" TO DISPLAY
+    RECEIVE newPassword FROM (ALPHANUMERIC) KEYBOARD
+
+    SEND "Confirm your new password:" TO DISPLAY
+    RECEIVE confirmPassword FROM (ALPHANUMERIC) KEYBOARD
+
+    # --- Log attempt ---
+    WRITE Tbl_PasswordAudit usernameEmail, CURRENT_TIME, "Attempt", ""
+
+    # --- Presence checks ---
+    IF usernameEmail = "" THEN
+        SET isValid TO FALSE
+        SET errorMessage TO "Missing username/email"
+    END IF
+
+    IF isValid = TRUE AND currentPassword = "" THEN
+        SET isValid TO FALSE
+        SET errorMessage TO "Missing current password"
+    END IF
+
+    IF isValid = TRUE AND newPassword = "" THEN
+        SET isValid TO FALSE
+        SET errorMessage TO "Missing new password"
+    END IF
+
+    IF isValid = TRUE AND confirmPassword = "" THEN
+        SET isValid TO FALSE
+        SET errorMessage TO "Missing password confirmation"
+    END IF
+
+    IF isValid = FALSE THEN
+        CALL ShowErrorMessage(errorMessage)
+        WRITE Tbl_ErrorLog errorMessage, CURRENT_TIME
+        WRITE Tbl_PasswordAudit usernameEmail, CURRENT_TIME, "FailedValidation", errorMessage
+        RETURN FALSE
+    END IF
+
+    # --- Basic email format check ---
+    IF NOT (usernameEmail CONTAINS "@" AND usernameEmail CONTAINS ".") THEN
+        CALL ShowErrorMessage("Invalid email format")
+        WRITE Tbl_ErrorLog "Invalid email format", CURRENT_TIME
+        WRITE Tbl_PasswordAudit usernameEmail, CURRENT_TIME, "FailedValidation", "EmailFormat"
+        RETURN FALSE
+    END IF
+
+    # --- Password policy checks ---
+    # 1) Minimum length 8
+    IF LENGTH(newPassword) < 8 THEN
+        CALL ShowErrorMessage("New password must be at least 8 characters.")
+        WRITE Tbl_ErrorLog "Password too short", CURRENT_TIME
+        WRITE Tbl_PasswordAudit usernameEmail, CURRENT_TIME, "FailedPolicy", "TooShort"
+        RETURN FALSE
+    END IF
+
+    # 2) Must include upper, lower, digit, symbol
+    IF NOT (CONTAINS_UPPER(newPassword) AND CONTAINS_LOWER(newPassword) AND CONTAINS_DIGIT(newPassword) AND CONTAINS_SYMBOL(newPassword)) THEN
+        CALL ShowErrorMessage("Password must include upper, lower, number, and symbol.")
+        WRITE Tbl_ErrorLog "Password complexity not met", CURRENT_TIME
+        WRITE Tbl_PasswordAudit usernameEmail, CURRENT_TIME, "FailedPolicy", "Complexity"
+        RETURN FALSE
+    END IF
+
+    # 3) Must match confirmation
+    IF newPassword <> confirmPassword THEN
+        CALL ShowErrorMessage("Passwords do not match.")
+        WRITE Tbl_ErrorLog "Password confirmation mismatch", CURRENT_TIME
+        WRITE Tbl_PasswordAudit usernameEmail, CURRENT_TIME, "FailedPolicy", "Mismatch"
+        RETURN FALSE
+    END IF
+
+    # --- Lookup user and verify current password ---
+    SET storedPasswordHash TO SELECT password_hash FROM Tbl_User WHERE email = usernameEmail
+    SET userID TO SELECT user_id FROM Tbl_User WHERE email = usernameEmail
+
+    IF storedPasswordHash = "" OR userID = 0 THEN
+        CALL ShowErrorMessage("Invalid login")
+        WRITE Tbl_LoginAudit usernameEmail, CURRENT_TIME, "FailedEmail"
+        WRITE Tbl_PasswordAudit usernameEmail, CURRENT_TIME, "FailedEmail", "UserNotFound"
+        RETURN FALSE
+    END IF
+
+    IF VerifyPassword(currentPassword, storedPasswordHash) = FALSE THEN
+        CALL ShowErrorMessage("Invalid login")
+        WRITE Tbl_LoginAudit usernameEmail, CURRENT_TIME, "FailedPassword"
+        WRITE Tbl_PasswordAudit usernameEmail, CURRENT_TIME, "FailedCurrentPassword", ""
+        RETURN FALSE
+    END IF
+
+    # 4) New password must differ from current
+    IF VerifyPassword(newPassword, storedPasswordHash) = TRUE THEN
+        CALL ShowErrorMessage("New password must be different from the current password.")
+        WRITE Tbl_ErrorLog "New password equals current", CURRENT_TIME
+        WRITE Tbl_PasswordAudit usernameEmail, CURRENT_TIME, "FailedPolicy", "SameAsCurrent"
+        RETURN FALSE
+    END IF
+
+    # --- (Optional) Disallow reuse of last 5 passwords ---
+    FOR EACH prevHash FROM SELECT TOP 5 password_hash FROM Tbl_PasswordHistory WHERE user_id = userID ORDER BY changed_time DESC DO
+        IF VerifyPassword(newPassword, prevHash) = TRUE THEN
+            SET reuseFound TO TRUE
+        END IF
+    END FOREACH
+
+    IF reuseFound = TRUE THEN
+        CALL ShowErrorMessage("New password was used recently. Choose a different password.")
+        WRITE Tbl_ErrorLog "Password reuse detected", CURRENT_TIME
+        WRITE Tbl_PasswordAudit usernameEmail, CURRENT_TIME, "FailedPolicy", "Reuse"
+        RETURN FALSE
+    END IF
+
+    # --- Update password ---
+    SET newPasswordHash TO HashPassword(newPassword)
+
+    UPDATE Tbl_User
+        SET password_hash = newPasswordHash,
+            password_last_changed = CURRENT_TIME
+        WHERE email = usernameEmail
+
+    # Record in password history
+    INSERT INTO Tbl_PasswordHistory VALUES (userID, newPasswordHash, CURRENT_TIME)
+
+    # Audit logs
+    WRITE Tbl_PasswordAudit usernameEmail, CURRENT_TIME, "Success", ""
+    WRITE Tbl_LoginAudit usernameEmail, CURRENT_TIME, "PasswordChanged"
+
+    # (Optional) Invalidate existing sessions for safety
+    UPDATE Tbl_Session SET sessionLoggedIn = FALSE WHERE sessionUser = usernameEmail
+    WRITE Tbl_ErrorLog "Sessions invalidated post password change", CURRENT_TIME
+
+    SEND "Password updated successfully." TO DISPLAY
+    RETURN TRUE
+END FUNCTION
+
+
+
+FUNCTION ShowErrorMessage(errorType)
+BEGIN FUNCTION
+    # Determine the correct message to show the user
+    IF errorType = "Missing username/email" THEN
+        SEND "Enter your username/email" TO DISPLAY
+
+    ELSE IF errorType = "Missing password" THEN
+        SEND "Enter your password" TO DISPLAY
+
+    ELSE IF errorType = "Invalid login" THEN
+        SEND "Login failed. Check your details and try again." TO DISPLAY
+
+    ELSE IF errorType = "Invalid option" THEN
+        SEND "Please select a valid option from the menu." TO DISPLAY
+
+    ELSE IF errorType = "Invalid input" THEN
+        SEND "Invalid input entered. Please try again." TO DISPLAY
+
+    ELSE
+        SEND "An error occurred. Please contact support if the problem continues." TO DISPLAY
+    END IF
+
+    # Log every error to your table for audit purposes
+    WRITE Tbl_ErrorLog errorType, CURRENT_TIME
+END FUNCTION
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+FUNCTION ShowErrorMessage(errorType)
+BEGIN FUNCTION
+    IF errorType = "Missing email" THEN
+        SEND "Please enter your email address." TO DISPLAY
+    ELSE IF errorType = "Missing password" THEN
+        SEND "Please enter your password." TO DISPLAY
+    ELSE IF errorType = "Invalid login" THEN
+        SEND "Login failed. Check your details and try again." TO DISPLAY
+    ELSE IF errorType = "Password too short" THEN
+        SEND "Password must be at least 8 characters." TO DISPLAY
+    ELSE IF errorType = "Duplicate email" THEN
+        SEND "An account with this email already exists." TO DISPLAY
+    ELSE IF errorType = "Workout validation failed" THEN
+        SEND "Please check workout type/date/duration/intensity/calories." TO DISPLAY
+    ELSE
+        SEND "An error occurred. Please try again." TO DISPLAY
+    END IF
+
+    # Minimal audit trail
+    WRITE Tbl_ErrorLog errorType, CURRENT_TIME
+END FUNCTION
+
+
+FUNCTION CreateUser(email, password, clientFirstName, clientSurname, clientAddress, clientPostcode)
+BEGIN FUNCTION
+    DECLARE userID
+    DECLARE username
+    DECLARE existingUser
+
+    # Presence checks
+    IF email = "" THEN
+        ShowErrorMessage("Missing email")
+        RETURN 0
+    END IF
+
+    IF password = "" THEN
+        ShowErrorMessage("Missing password")
+        RETURN 0
+    END IF
+
+    # Simple format/range checks (email + password length)
+    IF NOT (email CONTAINS "@" AND email CONTAINS ".") THEN
+        ShowErrorMessage("Invalid login")
+        RETURN 0
+    END IF
+
+    IF LENGTH(password) < 8 THEN
+        ShowErrorMessage("Password too short")
+        RETURN 0
+    END IF
+
+    # Duplicate check
+    SET existingUser TO SELECT user_id FROM Tbl_User WHERE email = email
+    IF existingUser <> 0 THEN
+        ShowErrorMessage("Duplicate email")
+        RETURN 0
+    END IF
+
+    # Create client record first (if not already in client table)
+    SET clientID TO SELECT client_id FROM Tbl_Client WHERE email = email
+    IF clientID = 0 THEN
+        SET clientID TO INSERT INTO Tbl_Client
+            VALUES (clientFirstName, clientSurname, clientAddress, clientPostcode, email)
+        WRITE Tbl_ClientAudit clientID, CURRENT_TIME, "Created"
+    END IF
+
+    # Hash and insert user
+    SET passwordHash TO HashPassword(password)
+    SET username TO clientFirstName & " " & clientSurname
+    SET userID TO INSERT INTO Tbl_User VALUES (email, passwordHash, username, clientID)
+
+    WRITE Tbl_UserAudit userID, CURRENT_TIME, "AccountCreated"
+
+    RETURN userID
+END FUNCTION
+
+
+
+FUNCTION ValidateUserCredentials(email, password)
+BEGIN FUNCTION
+    DECLARE loginValid
+    DECLARE storedHash
+    DECLARE userID
+    DECLARE username
+
+    SET loginValid TO FALSE
+    SET userID TO 0
+    SET username TO ""
+
+    # Presence checks as per flowchart logic
+    IF email = "" THEN
+        ShowErrorMessage("Missing email")
+        RETURN { loginValid, userID, username }
+    END IF
+
+    IF password = "" THEN
+        ShowErrorMessage("Missing password")
+        RETURN { loginValid, userID, username }
+    END IF
+
+    # Lookup user
+    SET storedHash, userID, username TO
+        SELECT password_hash, user_id, username FROM Tbl_User WHERE email = email
+
+    WRITE Tbl_LoginAudit email, CURRENT_TIME, "Attempt"
+
+    IF storedHash <> "" THEN
+        IF VerifyPassword(password, storedHash) = TRUE THEN
+            SET loginValid TO TRUE
+            WRITE Tbl_LoginAudit email, CURRENT_TIME, "Success"
+        ELSE
+            WRITE Tbl_LoginAudit email, CURRENT_TIME, "FailedPassword"
+            ShowErrorMessage("Invalid login")
+        END IF
+    ELSE
+        WRITE Tbl_LoginAudit email, CURRENT_TIME, "FailedEmail"
+        ShowErrorMessage("Invalid login")
+    END IF
+
+    RETURN { loginValid, userID, username }
+END FUNCTION
+
+
+
+
+PROCEDURE Update_Password(email)
+BEGIN PROCEDURE
+    DECLARE newPassword
+    DECLARE confirmPassword
+
+    IF email = "" THEN
+        ShowErrorMessage("Missing email")
+        RETURN
+    END IF
+
+    SEND "Enter new password:" TO DISPLAY
+    RECEIVE newPassword FROM (STRING) KEYBOARD
+
+    SEND "Confirm new password:" TO DISPLAY
+    RECEIVE confirmPassword FROM (STRING) KEYBOARD
+
+    IF newPassword = "" OR LENGTH(newPassword) < 8 THEN
+        ShowErrorMessage("Password too short")
+        RETURN
+    END IF
+
+    IF newPassword <> confirmPassword THEN
+        ShowErrorMessage("Invalid login")  # reuse generic message
+        RETURN
+    END IF
+
+    # Update
+    SET newHash TO HashPassword(newPassword)
+    UPDATE Tbl_User SET password_hash = newHash WHERE email = email
+    WRITE Tbl_UserAudit email, CURRENT_TIME, "PasswordUpdated"
+
+    SEND "Password updated successfully." TO DISPLAY
+END PROCEDURE
+
+
+
+PROCEDURE UserDashboard(username, userID)
+BEGIN PROCEDURE
+    DECLARE choice
+    DECLARE clientID
+
+    REPEAT
+        SEND "Welcome, " & username & "!" TO DISPLAY
+        SEND "1. Log your workout" TO DISPLAY
+        SEND "2. Check meal plan" TO DISPLAY
+        SEND "3. Watch a session" TO DISPLAY
+        SEND "4. Check user progress" TO DISPLAY
+        SEND "5. Exit" TO DISPLAY
+
+        SEND "Enter choice (1-5):" TO DISPLAY
+        RECEIVE choice FROM (INTEGER) KEYBOARD
+
+        IF choice = 1 THEN
+            # Ensure a client record exists/return ID (as per flowchart)
+            SET clientID TO AddOrRetrieveClientRecord()
+            Add_Workout(userID)
+        ELSE IF choice = 2 THEN
+            SEND "Meal plan feature (to be implemented)." TO DISPLAY
+        ELSE IF choice = 3 THEN
+            SEND "Workshops/sessions feature (to be implemented)." TO DISPLAY
+        ELSE IF choice = 4 THEN
+            SEND "User progress feature (to be implemented)." TO DISPLAY
+        ELSE IF choice = 5 THEN
+            SEND "Goodbye!" TO DISPLAY
+        ELSE
+            ShowErrorMessage("Invalid login")  # reuse generic invalid
+        END IF
+    UNTIL choice = 5
+END PROCEDURE
+
+
+
+FUNCTION AddOrRetrieveClientRecord()
+BEGIN FUNCTION
+    DECLARE clientFirstName
+    DECLARE clientSurname
+    DECLARE clientAddress
+    DECLARE clientPostcode
+    DECLARE email
+    DECLARE clientID
+
+    SEND "Enter client first name:" TO DISPLAY
+    RECEIVE clientFirstName FROM (STRING) KEYBOARD
+
+    SEND "Enter client surname:" TO DISPLAY
+    RECEIVE clientSurname FROM (STRING) KEYBOARD
+
+    SEND "Enter client address:" TO DISPLAY
+    RECEIVE clientAddress FROM (STRING) KEYBOARD
+
+    SEND "Enter client postcode:" TO DISPLAY
+    RECEIVE clientPostcode FROM (STRING) KEYBOARD
+
+    SEND "Enter email:" TO DISPLAY
+    RECEIVE email FROM (STRING) KEYBOARD
+
+    # Minimal presence checks
+    IF clientFirstName = "" OR clientSurname = "" OR clientAddress = "" OR clientPostcode = "" OR email = "" THEN
+        ShowErrorMessage("Invalid login")  # generic prompt reuse
+        RETURN 0
+    END IF
+
+    # Try to find existing client
+    SET clientID TO SELECT client_id FROM Tbl_Client
+        WHERE (email = email) OR (client_surname = clientSurname AND client_postcode = clientPostcode)
+
+    IF clientID <> 0 THEN
+        WRITE Tbl_ClientAudit clientID, CURRENT_TIME, "Retrieved"
+        RETURN clientID
+    END IF
+
+    # Insert new client
+    SET clientID TO INSERT INTO Tbl_Client
+        VALUES (clientFirstName, clientSurname, clientAddress, clientPostcode, email)
+
+    WRITE Tbl_ClientAudit clientID, CURRENT_TIME, "Created"
+    RETURN clientID
+END FUNCTION
+
+
+
+PROCEDURE Add_Workout(userID)
+BEGIN PROCEDURE
+    DECLARE workoutType
+    DECLARE workoutDate
+    DECLARE workoutDuration   # minutes (INTEGER)
+    DECLARE workoutIntensity  # e.g., "Low/Moderate/High"
+    DECLARE calories          # INTEGER
+
+    # Collect inputs
+    SEND "Enter workout type (e.g., Cardio, Strength, HIIT):" TO DISPLAY
+    RECEIVE workoutType FROM (STRING) KEYBOARD
+
+    SEND "Enter workout date (YYYY-MM-DD):" TO DISPLAY
+    RECEIVE workoutDate FROM (STRING) KEYBOARD   # Treat as DATE in DB
+
+    SEND "Enter duration in minutes:" TO DISPLAY
+    RECEIVE workoutDuration FROM (INTEGER) KEYBOARD
+
+    SEND "Enter intensity (Low/Moderate/High):" TO DISPLAY
+    RECEIVE workoutIntensity FROM (STRING) KEYBOARD
+
+    SEND "Enter calories burned (whole number):" TO DISPLAY
+    RECEIVE calories FROM (INTEGER) KEYBOARD
+
+    # Basic validation
+    IF workoutType = "" OR workoutDate = "" THEN
+        ShowErrorMessage("Workout validation failed")
+        RETURN
+    END IF
+
+    IF workoutDuration < 1 OR calories < 0 THEN
+        ShowErrorMessage("Workout validation failed")
+        RETURN
+    END IF
+
+    # Insert workout
+    INSERT INTO Tbl_Workout VALUES (userID, workoutType, workoutDate, workoutDuration, workoutIntensity, calories)
+    WRITE Tbl_WorkoutAudit userID, CURRENT_TIME, "WorkoutLogged"
+
+    SEND "Workout logged successfully." TO DISPLAY
+END PROCEDURE
+
+
+
+# Lists available workshops, allows user to select, and logs attendance/play.
+PROCEDURE Watch_Session(userID)
+BEGIN PROCEDURE
+    DECLARE filterFormat
+    DECLARE workshopList
+    DECLARE index
+    DECLARE chosen
+    DECLARE selectedWorkshopID
+    DECLARE selectedFormat
+    DECLARE canAccess
+
+    # Optional filter by format (Online / Recorded / InPerson)
+    SEND "Filter by format? Enter Online / Recorded / InPerson or leave blank:" TO DISPLAY
+    RECEIVE filterFormat FROM (STRING) KEYBOARD
+
+    # Retrieve available sessions (apply filter if provided)
+    IF filterFormat = "" THEN
+        SET workshopList TO SELECT workshop_id, title, format, start_time, status
+            FROM Tbl_Workshop
+            WHERE status = "Available"
+    ELSE
+        SET workshopList TO SELECT workshop_id, title, format, start_time, status
+            FROM Tbl_Workshop
+            WHERE status = "Available" AND format = filterFormat
+    END IF
+
+    # If no sessions, inform and return to dashboard
+    IF LENGTH(workshopList) = 0 THEN
+        SEND "No sessions match your criteria." TO DISPLAY
+        RETURN
+    END IF
+
+    # Display sessions
+    SEND "Available sessions:" TO DISPLAY
+    SET index TO 0
+    FOR EACH session FROM workshopList DO
+        SEND index & ". " & session.title & " | " & session.format & " | " &
+             session.start_time TO DISPLAY
+        SET index TO index + 1
+    END FOREACH
+
+    # Choose a session
+    SEND "Enter the number of the session to watch (or -1 to cancel):" TO DISPLAY
+    RECEIVE chosen FROM (INTEGER) KEYBOARD
+
+    IF chosen = -1 THEN
+        SEND "Cancelled." TO DISPLAY
+        RETURN
+    END IF
+
+    # Validate selection
+    IF chosen < 0 OR chosen >= LENGTH(workshopList) THEN
+        ShowErrorMessage("Invalid login")   # reuse generic invalid selection
+        RETURN
+    END IF
+
+    # Extract chosen workshop details
+    SET selectedWorkshopID TO workshopList[chosen].workshop_id
+    SET selectedFormat TO workshopList[chosen].format
+
+    # Determine access rules
+    SET canAccess TO TRUE
+    IF selectedFormat = "InPerson" THEN
+        # In-person sessions cannot be 'watched'—display details instead
+        SET canAccess TO FALSE
+    END IF
+
+    IF canAccess = TRUE THEN
+        # Online or Recorded: fetch link and 'play'
+        IF selectedFormat = "Online" THEN
+            SET link TO SELECT delivery_link FROM Tbl_Workshop WHERE workshop_id = selectedWorkshopID
+            SEND "Opening live session: " & link TO DISPLAY
+            WRITE Tbl_Attendance userID, selectedWorkshopID, CURRENT_TIME, "OnlineLive"
+        ELSE
+            SET rlink TO SELECT recording_link FROM Tbl_Workshop WHERE workshop_id = selectedWorkshopID
+            SEND "Playing recording: " & rlink TO DISPLAY
+            WRITE Tbl_Attendance userID, selectedWorkshopID, CURRENT_TIME, "Recording"
+        END IF
+    ELSE
+        # Provide venue/time details for in-person session
+        SET startTime TO SELECT start_time FROM Tbl_Workshop WHERE workshop_id = selectedWorkshopID
+        SEND "This is an in-person session. Starts at: " & startTime TO DISPLAY
+        SEND "Please attend at the listed venue. Attendance will be marked by staff." TO DISPLAY
+    END IF
+
+    SEND "Session access complete." TO DISPLAY
+END PROCEDURE
+
+
+
+
+# Summarises workout history for the user and displays recent trends.
+PROCEDURE Check_User_Progress(userID)
+BEGIN PROCEDURE
+    DECLARE totalSessions
+    DECLARE totalMinutes
+    DECLARE totalCalories
+    DECLARE avgMinutes
+    DECLARE avgCalories
+    DECLARE last7Sessions
+    DECLARE last30Sessions
+    DECLARE byTypeSummary
+    DECLARE record
+
+    # Overall aggregates
+    SET totalSessions TO SELECT COUNT(*) FROM Tbl_Workout WHERE user_id = userID
+    SET totalMinutes  TO SELECT SUM(workout_duration) FROM Tbl_Workout WHERE user_id = userID
+    SET totalCalories TO SELECT SUM(calories) FROM Tbl_Workout WHERE user_id = userID
+
+    IF totalSessions = 0 THEN
+        SEND "No workouts logged yet. Log your first workout to see progress." TO DISPLAY
+        RETURN
+    END IF
+
+    SET avgMinutes  TO totalMinutes / totalSessions
+    SET avgCalories TO totalCalories / totalSessions
+
+    # Recent windows (last 7 and last 30 days)
+    SET last7Sessions  TO SELECT COUNT(*), SUM(workout_duration), SUM(calories)
+                         FROM Tbl_Workout
+                         WHERE user_id = userID AND workout_date >= (CURRENT_DATE - 7 DAYS)
+
+    SET last30Sessions TO SELECT COUNT(*), SUM(workout_duration), SUM(calories)
+                         FROM Tbl_Workout
+                         WHERE user_id = userID AND workout_date >= (CURRENT_DATE - 30 DAYS)
+
+    # Breakdown by workout type (simple loop over grouped results)
+    SET byTypeSummary TO SELECT workout_type, COUNT(*) AS c, SUM(workout_duration) AS mins, SUM(calories) AS kcals
+                        FROM Tbl_Workout
+                        WHERE user_id = userID
+                        GROUP BY workout_type
+
+    # Output section
+    SEND "=== Your Progress Summary ===" TO DISPLAY
+    SEND "Total sessions: " & totalSessions TO DISPLAY
+    SEND "Total minutes: " & totalMinutes & " | Total calories: " & totalCalories TO DISPLAY
+    SEND "Average per session: " & avgMinutes & " mins | " & avgCalories & " kcals" TO DISPLAY
+
+    SEND "--- Recent activity ---" TO DISPLAY
+    SEND "Last 7 days -> Sessions: " & last7Sessions[0] & 
+         ", Minutes: " & last7Sessions[1] & 
+         ", Calories: " & last7Sessions[2] TO DISPLAY
+
+    SEND "Last 30 days -> Sessions: " & last30Sessions[0] & 
+         ", Minutes: " & last30Sessions[1] & 
+         ", Calories: " & last30Sessions[2] TO DISPLAY
+
+    SEND "--- By workout type ---" TO DISPLAY
+    FOR EACH record FROM byTypeSummary DO
+        SEND record.workout_type & ": " & record.c & " sessions, " &
+             record.mins & " mins, " & record.kcals & " kcals" TO DISPLAY
+    END FOREACH
+
+    # Optional: identify best single-session calories
+    SET bestKcals TO SELECT MAX(calories) FROM Tbl_Workout WHERE user_id = userID
+    SEND "Personal best (calories in one session): " & bestKcals TO DISPLAY
+
+    # Optional: consistency streak in last 14 days
+    SET daysActive14 TO SELECT COUNT(DISTINCT workout_date)
+                        FROM Tbl_Workout
+                        WHERE user_id = userID AND workout_date >= (CURRENT_DATE - 14 DAYS)
+    SEND "Active days (last 14): " & daysActive14 & "/14" TO DISPLAY
+END PROCEDURE
+
+
+
+
+
+
+
+
+
+
+
+
+
